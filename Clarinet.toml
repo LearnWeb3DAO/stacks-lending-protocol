@@ -1,0 +1,44 @@
+[project]
+name = 'sbtc-stx-lending-pool'
+description = ''
+authors = []
+telemetry = false
+cache_dir = './.cache'
+
+[[project.requirements]]
+contract_id = 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token'
+
+[[project.requirements]]
+contract_id = 'SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-swap-helper-v-1-3'
+
+[[project.requirements]]
+contract_id = 'SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1'
+
+[[project.requirements]]
+contract_id = 'SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2'
+
+[[project.requirements]]
+contract_id = 'SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-deposit'
+
+[contracts.lending-pool]
+path = 'contracts/lending-pool.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.mock-oracle]
+path = 'contracts/mock-oracle.clar'
+clarity_version = 3
+epoch = 3.1
+[repl.analysis]
+passes = ['check_checker']
+
+[repl.analysis.check_checker]
+strict = false
+trusted_sender = false
+trusted_caller = false
+callee_filter = false
+
+[repl.remote_data]
+enabled = true
+api_url = 'https://api.hiro.so'
+use_mainnet_wallets = true
