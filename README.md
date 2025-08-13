@@ -6,8 +6,8 @@ This document serves as a comprehensive guide and tutorial for building a decent
 
 The sBTC-STX Lending Pool is a decentralized application (dApp) that allows users to lend and borrow assets in a trustless manner. In this specific implementation, users can:
 
-*   **Lend:** Deposit sBTC (a wrapped version of Bitcoin on Stacks) into the lending pool and earn interest on their deposits.
-*   **Borrow:** Use their deposited sBTC as collateral to borrow STX (the native token of the Stacks blockchain).
+*   **Lend:** Deposit STX into the lending pool and earn interest on their deposits.
+*   **Borrow:** Use their sBTC as collateral to borrow STX.
 
 This project demonstrates the core functionalities of a lending protocol, including deposits, withdrawals, borrowing, repayments, and liquidations.
 
@@ -15,7 +15,7 @@ This project demonstrates the core functionalities of a lending protocol, includ
 
 There are three main actors in our lending pool ecosystem:
 
-*   **Lender:** A user who deposits sBTC into the lending pool to earn yield. The yield is generated from the interest paid by borrowers.
+*   **Lender:** A user who deposits STX into the lending pool to earn yield. The yield is generated from the interest paid by borrowers.
 *   **Borrower:** A user who deposits sBTC as collateral to borrow STX. They pay interest on their borrowed STX, which is then distributed to the lenders.
 *   **Liquidator:** A user who monitors the health of loans and repays the debt of borrowers whose collateral value has fallen below a certain threshold. In return for repaying the debt, the liquidator receives a portion of the borrower's collateral as a reward.
 
@@ -57,7 +57,12 @@ This contract is responsible for storing and updating the sBTC/STX price.
 (define-data-var initialized bool false)
 (define-data-var btc-stx-price uint u0)
 
+;; public functions
+
 ;; @desc Initializes the oracle by setting the updater address.
+;; @desc Can only be called once by the contract owner.
+;; @param new-updater: The principal of the price updater.
+;; @returns (response bool)
 (define-public (initialize (new-updater principal))
   (begin
     (asserts! (is-eq tx-sender (var-get owner)) ERR_NOT_OWNER)
@@ -69,18 +74,37 @@ This contract is responsible for storing and updating the sBTC/STX price.
 )
 
 ;; @desc Updates the BTC/STX price.
+;; @desc Can only be called by the designated updater address.
+;; @param new-price: The new price of BTC in STX (as a uint).
+;; @returns (response bool)
 (define-public (update-price (new-price uint))
   (begin
     (asserts! (var-get initialized) ERR_NOT_INITIALIZED)
     (asserts! (is-eq tx-sender (var-get updater)) ERR_NOT_UPDATER)
     (var-set btc-stx-price new-price)
+
     (ok true)
   )
 )
 
+;; read only functions
+
 ;; @desc Gets the current BTC/STX price.
+;; @returns (response uint)
 (define-read-only (get-price)
   (ok (var-get btc-stx-price))
+)
+
+;; @desc Gets the updater address.
+;; @returns principal
+(define-read-only (get-updater)
+  (var-get updater)
+)
+
+;; @desc Checks if the contract has been initialized.
+;; @returns bool
+(define-read-only (is-initialized)
+  (var-get initialized)
 )
 ```
 
@@ -89,6 +113,8 @@ This contract is responsible for storing and updating the sBTC/STX price.
 *   **`initialize`:** This function is called once by the contract owner to set the `updater` address. The `updater` is the only one who can then call `update-price`.
 *   **`update-price`:** This function is called by the `updater` to set the `btc-stx-price`.
 *   **`get-price`:** This is a read-only function that returns the current `btc-stx-price`.
+*   **`get-updater`:** This is a read-only function that returns the `updater` address.
+*   **`is-initialized`:** This is a read-only function that returns whether the contract has been initialized.
 
 ### `lending-pool.clar`
 
@@ -97,28 +123,40 @@ This is the main contract that contains the logic for the lending pool.
 #### Constants and Data Storage
 
 ```clarity
+;; Errors
+(define-constant ERR_INVALID_WITHDRAW_AMOUNT (err u100))
+(define-constant ERR_EXCEEDED_MAX_BORROW (err u101))
+(define-constant ERR_CANNOT_BE_LIQUIDATED (err u102))
+
 ;; Constants
 (define-constant LTV_PERCENTAGE u70)
 (define-constant INTEREST_RATE_PERCENTAGE u10)
-(define-constant LIQUIDATION_THRESHOLD_PERCENTAGE u75)
-(define-constant ONE_YEAR_IN_SECS u86400)
+(define-constant LIQUIDATION_THRESHOLD_PERCENTAGE u90)
+(define-constant ONE_YEAR_IN_SECS u31556952)
 
 ;; Storage
-(define-data-var total-deposits uint u1)
-(define-data-var total-borrows uint u0)
+(define-data-var total-sbtc-collateral uint u0)
+(define-data-var total-stx-deposits uint u1)
+(define-data-var total-stx-borrows uint u0)
+
 (define-data-var last-interest-accrual uint (get-latest-timestamp))
-(define-data-var cumulative-yield-per-sbtc uint u0)
+(define-data-var cumulative-yield-bips uint u0)
+
+(define-map collateral
+  { user: principal }
+  { amount: uint }
+)
 (define-map deposits
   { user: principal }
   {
-    amount-sbtc: uint,
+    amount: uint,
     yield-index: uint,
   }
 )
 (define-map borrows
   { user: principal }
   {
-    amount-stx: uint,
+    amount: uint,
     last-accrued: uint,
   }
 )
@@ -128,50 +166,48 @@ This is the main contract that contains the logic for the lending pool.
 
 *   **`LTV_PERCENTAGE`:** Loan-to-Value percentage. This determines the maximum amount a user can borrow against their collateral (70% in this case).
 *   **`INTEREST_RATE_PERCENTAGE`:** The annual interest rate for borrowers (10%).
-*   **`LIQUIDATION_THRESHOLD_PERCENTAGE`:** If the value of a user's debt exceeds this percentage of their collateral value (75%), they can be liquidated.
-*   **`total-deposits` and `total-borrows`:** These variables track the total amount of sBTC deposited and STX borrowed in the pool.
-*   **`deposits` and `borrows`:** These maps store information about each user's deposits and borrows.
+*   **`LIQUIDATION_THRESHOLD_PERCENTAGE`:** If the value of a user's debt exceeds this percentage of their collateral value (90%), they can be liquidated.
+*   **`total-sbtc-collateral`:** This variable tracks the total amount of sBTC deposited as collateral.
+*   **`total-stx-deposits` and `total-stx-borrows`:** These variables track the total amount of STX deposited and borrowed in the pool.
+*   **`collateral`:** This map stores information about each user's sBTC collateral.
+*   **`deposits` and `borrows`:** These maps store information about each user's STX deposits and borrows.
 
 #### Lender Logic
 
 ```clarity
-(define-public (deposit (amount uint))
+(define-public (deposit-stx (amount uint))
   (let (
       (user-deposit (map-get? deposits { user: tx-sender }))
-      (deposited-sbtc (default-to u0 (get amount-sbtc user-deposit)))
+      (deposited-stx (default-to u0 (get amount user-deposit)))
     )
     (unwrap-panic (accrue-interest))
-    (try! (contract-call? .sbtc-token transfer amount tx-sender (as-contract tx-sender) none))
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
     (map-set deposits { user: tx-sender } {
-      amount-sbtc: (+ deposited-sbtc amount),
-      yield-index: (var-get cumulative-yield-per-sbtc),
+      amount: (+ deposited-stx amount),
+      yield-index: (var-get cumulative-yield-bips),
     })
-    (var-set total-deposits (+ (var-get total-deposits) amount))
+    (var-set total-stx-deposits (+ (var-get total-stx-deposits) amount))
     (ok true)
   )
 )
 
-(define-public (withdraw (amount uint))
+(define-public (withdraw-stx (amount uint))
   (let (
-      (user-deposit (map-get? deposits { user: tx-sender }))
-      (deposited-sbtc (default-to u0 (get amount-sbtc user-deposit)))
+      (user tx-sender)
+      (user-deposit (map-get? deposits { user: user }))
+      (deposited-stx (default-to u0 (get amount user-deposit)))
+      (yield-index (default-to u0 (get yield-index user-deposit)))
       (pending-yield (unwrap-panic (get-pending-yield)))
-      (user-borrow (map-get? borrows { user: tx-sender }))
-      (user-borrowed-stx (default-to u0 (get amount-stx user-borrow)))
-      (price (unwrap-panic (get-sbtc-stx-price)))
-      (remaining-sbtc (- deposited-sbtc amount))
-      (max-borrow (/ (* (* remaining-sbtc price) LTV_PERCENTAGE) u100))
     )
-    (asserts! (>= deposited-sbtc amount) (err u100))
-    (asserts! (<= user-borrowed-stx max-borrow) (err u101))
+    (asserts! (>= deposited-stx amount) ERR_INVALID_WITHDRAW_AMOUNT)
     (unwrap-panic (accrue-interest))
-    (map-set deposits { user: tx-sender } {
-      amount-sbtc: remaining-sbtc,
-      yield-index: (var-get cumulative-yield-per-sbtc),
+
+    (map-set deposits { user: user } {
+      amount: (- deposited-stx amount),
+      yield-index: (var-get cumulative-yield-bips),
     })
-    (var-set total-deposits (- (var-get total-deposits) amount))
-    (try! (contract-call? .sbtc-token transfer amount (as-contract tx-sender) tx-sender none))
-    (try! (as-contract (stx-transfer? pending-yield tx-sender tx-sender)))
+    (var-set total-stx-deposits (- (var-get total-stx-deposits) amount))
+    (try! (as-contract (stx-transfer? (+ amount pending-yield) tx-sender user)))
     (ok true)
   )
 )
@@ -179,29 +215,44 @@ This is the main contract that contains the logic for the lending pool.
 
 **Explanation:**
 
-*   **`deposit`:** A user calls this function to deposit sBTC into the pool. The function transfers the sBTC from the user to the contract and updates the user's deposit information.
-*   **`withdraw`:** A user calls this function to withdraw their deposited sBTC. The function checks if the user has enough sBTC and if the withdrawal would not put their loan in an unhealthy state. It also transfers any pending yield to the user.
+*   **`deposit-stx`:** A user calls this function to deposit STX into the pool. The function transfers the STX from the user to the contract and updates the user's deposit information.
+*   **`withdraw-stx`:** A user calls this function to withdraw their deposited STX. The function checks if the user has enough STX and transfers any pending yield to the user.
 
 #### Borrower Logic
 
 ```clarity
-(define-public (borrow (amount-stx uint))
+(define-public (borrow-stx
+    (collateral-amount uint)
+    (amount-stx uint)
+  )
   (let (
-      (user-deposit (map-get? deposits { user: tx-sender }))
-      (deposited-sbtc (default-to u0 (get amount-sbtc user-deposit)))
+      (user tx-sender)
+      (user-collateral (map-get? collateral { user: user }))
+      (deposited-sbtc (default-to u0 (get amount user-collateral)))
+      (new-collateral (+ deposited-sbtc collateral-amount))
       (price (unwrap-panic (get-sbtc-stx-price)))
-      (max-borrow (/ (* (* deposited-sbtc price) LTV_PERCENTAGE) u100))
-      (user-borrow (map-get? borrows { user: tx-sender }))
-      (borrowed-stx (default-to u0 (get amount-stx user-borrow)))
-      (new-debt (+ borrowed-stx amount-stx))
+      (max-borrow (/ (* (* new-collateral price) LTV_PERCENTAGE) u100))
+      (user-borrow (map-get? borrows { user: user }))
+      (borrowed-stx (default-to u0 (get amount user-borrow)))
+      (user-debt (unwrap-panic (get-debt user)))
+      (new-debt (+ user-debt amount-stx))
     )
-    (asserts! (<= new-debt max-borrow) (err u102))
-    (map-set borrows { user: tx-sender } {
-      amount-stx: new-debt,
+    (asserts! (<= new-debt max-borrow) ERR_EXCEEDED_MAX_BORROW)
+
+    (unwrap-panic (accrue-interest))
+    (map-set borrows { user: user } {
+      amount: new-debt,
       last-accrued: (get-latest-timestamp),
     })
-    (var-set total-borrows (+ (var-get total-borrows) amount-stx))
-    (try! (as-contract (stx-transfer? amount-stx tx-sender tx-sender)))
+    (var-set total-stx-borrows (+ (var-get total-stx-borrows) amount-stx))
+    (map-set collateral { user: user } { amount: new-collateral })
+    (var-set total-sbtc-collateral
+      (+ (var-get total-sbtc-collateral) collateral-amount)
+    )
+    (try! (contract-call? .sbtc-token
+      transfer collateral-amount tx-sender (as-contract tx-sender) none
+    ))
+    (try! (as-contract (stx-transfer? amount-stx tx-sender user)))
     (ok true)
   )
 )
@@ -209,12 +260,24 @@ This is the main contract that contains the logic for the lending pool.
 (define-public (repay)
   (let (
       (user-borrow (map-get? borrows { user: tx-sender }))
-      (total-debt (unwrap-panic (get-debt tx-sender)))
-      (borrowed-stx (default-to u0 (get amount-stx user-borrow)))
+      (borrowed-stx (default-to u0 (get amount user-borrow)))
+      (total-debt (+ u1 (unwrap-panic (get-debt tx-sender))))
+      (user-collateral (map-get? collateral { user: tx-sender }))
+      (deposited-sbtc (default-to u0 (get amount user-collateral)))
     )
-    (try! (stx-transfer? total-debt tx-sender (as-contract tx-sender)))
-    (var-set total-borrows (- (var-get total-borrows) borrowed-stx))
+    (unwrap-panic (accrue-interest))
+
+    (map-delete collateral { user: tx-sender })
+    (var-set total-sbtc-collateral
+      (- (var-get total-sbtc-collateral) deposited-sbtc)
+    )
     (map-delete borrows { user: tx-sender })
+    (var-set total-stx-borrows (- (var-get total-stx-borrows) borrowed-stx))
+
+    (try! (stx-transfer? total-debt tx-sender (as-contract tx-sender)))
+    (try! (contract-call? .sbtc-token
+      transfer deposited-sbtc (as-contract tx-sender) tx-sender none
+    ))
     (ok true)
   )
 )
@@ -222,8 +285,8 @@ This is the main contract that contains the logic for the lending pool.
 
 **Explanation:**
 
-*   **`borrow`:** A user calls this function to borrow STX against their deposited sBTC. The function checks if the requested borrow amount is within the allowed LTV.
-*   **`repay`:** A user calls this function to repay their STX debt. The function calculates the total debt (including interest) and transfers the STX from the user to the contract.
+*   **`borrow-stx`:** A user calls this function to deposit sBTC as collateral and borrow STX. The function checks if the requested borrow amount is within the allowed LTV.
+*   **`repay`:** A user calls this function to repay their STX debt. The function calculates the total debt (including interest), transfers the STX from the user to the contract, and returns the sBTC collateral to the user.
 
 #### Liquidation Logic
 
@@ -231,26 +294,64 @@ This is the main contract that contains the logic for the lending pool.
 (define-public (liquidate (user principal))
   (let (
       (user-debt (unwrap-panic (get-debt user)))
-      (user-deposit (map-get? deposits { user: user }))
-      (deposited-sbtc (default-to u0 (get amount-sbtc user-deposit)))
+      (forfeited-borrows (if (> user-debt (var-get total-stx-borrows))
+        (var-get total-stx-borrows)
+        user-debt
+      ))
+      (user-collateral (map-get? collateral { user: user }))
+      (deposited-sbtc (default-to u0 (get amount user-collateral)))
       (price (unwrap-panic (get-sbtc-stx-price)))
       (collateral-value-in-stx (* deposited-sbtc price))
       (liquidator-bounty (/ (* deposited-sbtc u10) u100))
       (pool-reward (- deposited-sbtc liquidator-bounty))
+      (sbtc-balance (unwrap-panic (contract-call? .sbtc-token
+        get-balance (as-contract tx-sender)
+      )))
+      (xyk-tokens {
+        a: .sbtc-token,
+        b: .token-stx-v-1-2,
+      })
+      (xyk-pools { a: .xyk-pool-sbtc-stx-v-1-1 })
+      (quote (try! (contract-call?
+        .xyk-swap-helper-v-1-3
+        get-quote-a pool-reward none xyk-tokens xyk-pools
+      )))
     )
-    (asserts! (> user-debt u0) (err u103))
+    (unwrap-panic (accrue-interest))
+    (asserts! (> user-debt u0) ERR_CANNOT_BE_LIQUIDATED)
     (asserts!
       (< (* collateral-value-in-stx u100)
         (* user-debt LIQUIDATION_THRESHOLD_PERCENTAGE)
       )
-      (err u104)
+      ERR_CANNOT_BE_LIQUIDATED
     )
-    (var-set total-deposits (- (var-get total-deposits) deposited-sbtc))
-    (var-set total-borrows (- (var-get total-borrows) user-debt))
-    (map-delete deposits { user: user })
+
+    (var-set total-sbtc-collateral
+      (- (var-get total-sbtc-collateral) deposited-sbtc)
+    )
+    (var-set total-stx-borrows (- (var-get total-stx-borrows) forfeited-borrows))
     (map-delete borrows { user: user })
-    (try! (contract-call? .sbtc-token transfer liquidator-bounty (as-contract tx-sender) tx-sender none))
-    (try! (as-contract (stx-transfer? pool-reward tx-sender (as-contract tx-sender))))
+    (map-delete collateral { user: user })
+
+    (try! (contract-call? .sbtc-token
+      transfer (+ pool-reward liquidator-bounty) (as-contract tx-sender)
+      tx-sender none
+    ))
+
+    (let ((received-stx (try! (contract-call?
+        .xyk-swap-helper-v-1-3
+        swap-helper-a pool-reward u0 none xyk-tokens xyk-pools
+      ))))
+      (try! (stx-transfer? received-stx tx-sender (as-contract tx-sender)))
+
+      (var-set cumulative-yield-bips
+        (+ (var-get cumulative-yield-bips)
+          (/ (* (- received-stx forfeited-borrows) u10000)
+            (var-get total-stx-deposits)
+          ))
+      )
+    )
+
     (ok true)
   )
 )
@@ -258,7 +359,7 @@ This is the main contract that contains the logic for the lending pool.
 
 **Explanation:**
 
-*   **`liquidate`:** Anyone can call this function to liquidate a user whose loan is underwater. The function checks if the user is eligible for liquidation. If so, it repays the user's debt, gives a portion of the collateral to the liquidator as a bounty, and keeps the rest for the pool.
+*   **`liquidate`:** Anyone can call this function to liquidate a user whose loan is underwater. The function checks if the user is eligible for liquidation. If so, it repays the user's debt, gives a portion of the collateral to the liquidator as a bounty, and swaps the rest of the sBTC collateral for STX on a decentralized exchange to replenish the lending pool.
 
 ## Testing
 
@@ -279,8 +380,8 @@ This file contains tests for the `mock-oracle.clar` contract. It tests the follo
 
 This file contains tests for the `lending-pool.clar` contract. It tests the end-to-end user flows:
 
-*   **Deposit, Borrow, Repay, Withdraw:** This test simulates a user depositing sBTC, borrowing STX, repaying the loan, and then withdrawing their sBTC. It checks that all the balances and states are updated correctly.
-*   **Deposit, Borrow, Liquidate:** This test simulates a user depositing sBTC, borrowing STX, and then having their position liquidated when the sBTC price drops. It checks that the liquidator receives the bounty and the user's debt is cleared.
+*   **Deposit, Borrow, Repay, Withdraw:** This test simulates a user depositing STX, borrowing STX against sBTC collateral, repaying the loan, and then withdrawing their STX. It checks that all the balances and states are updated correctly.
+*   **Deposit, Borrow, Liquidate:** This test simulates a user depositing STX, borrowing STX against sBTC collateral, and then having their position liquidated when the sBTC price drops. It checks that the liquidator receives the bounty and the user's debt is cleared.
 
 These tests use the `simnet` object provided by `@stacks/clarity-native-bin` to simulate the Stacks blockchain environment and interact with the smart contracts.
 
